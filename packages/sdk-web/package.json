@@ -1,0 +1,23 @@
+{
+  "name": "@product-review-crew/sdk-web",
+  "version": "0.1.0",
+  "description": "Web SDK for Product Review Crew",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.5"
+  },
+  "files": [
+    "dist"
+  ]
+}
+

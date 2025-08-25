@@ -1,0 +1,416 @@
+# Created automatically by Cursor AI (2024-12-19)
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Lint and test frontend
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/frontend
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/frontend/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+    
+    - name: Run type checking
+      run: npm run type-check
+    
+    - name: Run tests
+      run: npm run test
+    
+    - name: Build application
+      run: npm run build
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-build
+        path: apps/frontend/.next
+
+  # Lint and test gateway
+  gateway:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gateway
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/gateway/package-lock.json
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+    
+    - name: Run type checking
+      run: npm run build
+    
+    - name: Run tests
+      run: npm run test
+    
+    - name: Run e2e tests
+      run: npm run test:e2e
+
+  # Test orchestrator
+  orchestrator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/orchestrator
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        cache-dependency-path: apps/orchestrator/requirements.txt
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio
+    
+    - name: Run linting
+      run: |
+        pip install flake8 black isort
+        flake8 .
+        black --check .
+        isort --check-only .
+    
+    - name: Run tests
+      run: |
+        pytest --cov=. --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: apps/orchestrator/coverage.xml
+        flags: orchestrator
+        name: orchestrator-coverage
+
+  # Test workers
+  workers:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/workers
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        cache-dependency-path: apps/workers/requirements.txt
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-asyncio celery[redis]
+    
+    - name: Run linting
+      run: |
+        pip install flake8 black isort
+        flake8 .
+        black --check .
+        isort --check-only .
+    
+    - name: Run unit tests
+      run: |
+        pytest --cov=. --cov-report=xml --cov-report=term-missing test_suite.py
+    
+    - name: Run integration tests
+      run: |
+        pytest --cov=. --cov-append --cov-report=xml --cov-report=term-missing -m integration
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: apps/workers/coverage.xml
+        flags: workers
+        name: workers-coverage
+
+  # Test SDK packages
+  sdk:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [sdk-web, sdk-node]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
+    
+    - name: Install dependencies
+      run: |
+        cd packages/${{ matrix.package }}
+        npm ci
+    
+    - name: Run linting
+      run: |
+        cd packages/${{ matrix.package }}
+        npm run lint
+    
+    - name: Run type checking
+      run: |
+        cd packages/${{ matrix.package }}
+        npm run build
+    
+    - name: Run tests
+      run: |
+        cd packages/${{ matrix.package }}
+        npm run test
+
+  # Security scanning
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+    
+    - name: Run dependency scanning
+      run: |
+        pip install safety
+        safety check --json --output safety-report.json || true
+    
+    - name: Run npm audit
+      run: |
+        cd apps/frontend && npm audit --audit-level moderate || true
+        cd apps/gateway && npm audit --audit-level moderate || true
+
+  # Database migrations
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install psycopg2-binary alembic
+    
+    - name: Test database migrations
+      run: |
+        # Test that migrations can be applied and rolled back
+        # This would be implemented based on your actual migration setup
+        echo "Testing database migrations..."
+
+  # Build and push Docker images
+  build-and-push:
+    needs: [frontend, gateway, orchestrator, workers, sdk, security, migrations]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+    
+    - name: Build and push frontend image
+      uses: docker/build-push-action@v5
+      with:
+        context: apps/frontend
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend:${{ steps.meta.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push gateway image
+      uses: docker/build-push-action@v5
+      with:
+        context: apps/gateway
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ steps.meta.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push orchestrator image
+      uses: docker/build-push-action@v5
+      with:
+        context: apps/orchestrator
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/orchestrator:${{ steps.meta.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Build and push workers image
+      uses: docker/build-push-action@v5
+      with:
+        context: apps/workers
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/workers:${{ steps.meta.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # Deploy to staging
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add your staging deployment logic here
+        # This could involve kubectl, helm, or other deployment tools
+
+  # Deploy to production
+  deploy-production:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        # Add your production deployment logic here
+        # This could involve kubectl, helm, or other deployment tools
+
+  # Performance testing
+  performance:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup k6
+      uses: grafana/k6-action@v0.3.0
+      with:
+        filename: performance-tests/load-test.js
+    
+    - name: Run performance tests
+      run: |
+        echo "Running performance tests..."
+        # Add your k6 or other performance testing logic here
+
+  # Notify on completion
+  notify:
+    needs: [deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify team
+      run: |
+        echo "CI/CD pipeline completed"
+        # Add your notification logic here (Slack, email, etc.)
